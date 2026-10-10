@@ -1,0 +1,263 @@
+name: Build APK
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create project files
+        run: |
+          cat > settings.gradle.kts <<'EOF_NEX'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "NEXCUT-AI"
+          include(":app")
+          EOF_NEX
+          cat > build.gradle.kts <<'EOF_NEX'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF_NEX
+          cat > gradle.properties <<'EOF_NEX'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=true
+          EOF_NEX
+          mkdir -p app
+          cat > app/build.gradle.kts <<'EOF_NEX'
+          plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
+          android {
+              namespace = "ai.nexcut"
+              compileSdk = 34
+              defaultConfig { applicationId = "ai.nexcut"; minSdk = 28; targetSdk = 34; versionCode = 1; versionName = "0.1.0" }
+              buildFeatures { compose = true }
+              composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
+              compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          dependencies {
+              implementation(platform("androidx.compose:compose-bom:2024.06.00"))
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.activity:activity-compose:1.9.0")
+              implementation("androidx.media3:media3-exoplayer:1.3.1")
+              implementation("androidx.media3:media3-ui:1.3.1")
+              implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+          }
+          EOF_NEX
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<'EOF_NEX'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application android:label="NEXCUT-AI" android:supportsRtl="true"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF_NEX
+          mkdir -p app/src/main/java/ai/nexcut
+          cat > app/src/main/java/ai/nexcut/Data.kt <<'EOF_NEX'
+          package ai.nexcut
+
+          import android.content.Context
+          import android.content.Intent
+          import android.media.MediaMetadataRetriever
+          import android.net.Uri
+          import android.provider.OpenableColumns
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.io.File
+
+          data class Project(val id: Long, val name: String, val uri: String, val durationMs: Long,
+                             val width: Int, val height: Int, val sizeBytes: Long)
+
+          object Probe {
+              /** Reads metadata only; the video is never loaded into memory. */
+              fun read(ctx: Context, uri: Uri): Project {
+                  try { ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) {}
+                  var name = "ظپظٹط¯ظٹظˆ"; var size = 0L
+                  ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                      if (c.moveToFirst()) {
+                          c.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }?.let { name = c.getString(it) }
+                          c.getColumnIndex(OpenableColumns.SIZE).takeIf { it >= 0 }?.let { size = c.getLong(it) }
+                      }
+                  }
+                  val r = MediaMetadataRetriever()
+                  try {
+                      r.setDataSource(ctx, uri)
+                      val dur = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
+                      val w = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
+                      val h = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
+                      if (dur == null || w == null || h == null) throw IllegalStateException("ط§ظ„ظ…ظ„ظپ ظ„ط§ ظٹط­طھظˆظٹ ظ…ط³ط§ط± ظپظٹط¯ظٹظˆ طµط§ظ„ط­ظ‹ط§")
+                      return Project(System.currentTimeMillis(), name, uri.toString(), dur, w, h, size)
+                  } finally { r.release() }
+              }
+          }
+
+          object Store {
+              private fun file(c: Context) = File(c.filesDir, "projects.json")
+              fun load(c: Context): List<Project> = try {
+                  val a = JSONArray(file(c).readText())
+                  (0 until a.length()).map { val o = a.getJSONObject(it)
+                      Project(o.getLong("id"), o.getString("name"), o.getString("uri"), o.getLong("d"),
+                          o.getInt("w"), o.getInt("h"), o.getLong("s")) }
+              } catch (_: Exception) { emptyList() }
+              fun save(c: Context, l: List<Project>) {
+                  val a = JSONArray(); l.forEach { a.put(JSONObject().put("id", it.id).put("name", it.name).put("uri", it.uri)
+                      .put("d", it.durationMs).put("w", it.width).put("h", it.height).put("s", it.sizeBytes)) }
+                  val tmp = File(c.filesDir, "projects.tmp"); tmp.writeText(a.toString()); tmp.renameTo(file(c))
+              }
+          }
+          EOF_NEX
+          mkdir -p app/src/main/java/ai/nexcut
+          cat > app/src/main/java/ai/nexcut/MainActivity.kt <<'EOF_NEX'
+          package ai.nexcut
+
+          import android.content.Context
+          import android.graphics.Bitmap
+          import android.media.MediaMetadataRetriever
+          import android.net.Uri
+          import android.os.Bundle
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.BackHandler
+          import androidx.activity.compose.rememberLauncherForActivityResult
+          import androidx.activity.compose.setContent
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.compose.foundation.Image
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.layout.*
+          import androidx.compose.foundation.lazy.LazyColumn
+          import androidx.compose.foundation.lazy.LazyRow
+          import androidx.compose.foundation.lazy.items
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.material3.*
+          import androidx.compose.runtime.*
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.draw.clip
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.asImageBitmap
+          import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.platform.LocalLayoutDirection
+          import androidx.compose.ui.unit.LayoutDirection
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.viewinterop.AndroidView
+          import androidx.media3.common.MediaItem
+          import androidx.media3.exoplayer.ExoPlayer
+          import androidx.media3.ui.PlayerView
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.launch
+          import kotlinx.coroutines.withContext
+
+          val Ink = Color(0xFF12101C); val Panel = Color(0xFF1B1828); val Amber = Color(0xFFF2B45A)
+          val Violet = Color(0xFF9A89FF); val Muted = Color(0xFFA49FBD)
+
+          class MainActivity : ComponentActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContent {
+                      MaterialTheme(colorScheme = darkColorScheme(primary = Amber, secondary = Violet, background = Ink, surface = Panel)) {
+                          CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+                              Surface(Modifier.fillMaxSize(), color = Ink) { App() }
+                          }
+                      }
+                  }
+              }
+          }
+
+          fun fmtTime(ms: Long): String { val s = ms / 1000; return "%d:%02d".format(s / 60, s % 60) }
+          fun fmtSize(b: Long) = if (b >= 1L shl 30) "%.2f GB".format(b / 1073741824.0) else "%.1f MB".format(b / 1048576.0)
+
+          @Composable fun App() {
+              val ctx = LocalContext.current
+              var projects by remember { mutableStateOf(Store.load(ctx)) }
+              var open by remember { mutableStateOf<Project?>(null) }
+              var busy by remember { mutableStateOf(false) }
+              var error by remember { mutableStateOf<String?>(null) }
+              val scope = rememberCoroutineScope()
+              val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                  if (uri != null) scope.launch {
+                      busy = true; error = null
+                      try {
+                          val p = withContext(Dispatchers.IO) { Probe.read(ctx, uri) }
+                          projects = listOf(p) + projects; Store.save(ctx, projects); open = p
+                      } catch (e: Exception) { error = "طھط¹ط°ط±طھ ظ‚ط±ط§ط،ط© ط§ظ„ظ…ظ„ظپ: ${e.message}" }
+                      busy = false
+                  }
+              }
+              BackHandler(open != null) { open = null }
+              val p = open
+              if (p != null) ProjectScreen(p) { open = null }
+              else Column(Modifier.fillMaxSize().systemBarsPadding().padding(18.dp)) {
+                  Text("NEXCUT-AI", style = MaterialTheme.typography.headlineMedium, color = Amber)
+                  Text("ظ…ظ† ط§ظ„ظپظٹط¯ظٹظˆ ط§ظ„ط®ط§ظ… ط¥ظ„ظ‰ ظ…ط´ط±ظˆط¹ ظ…ظ†ط¸ظ…", color = Muted)
+                  Spacer(Modifier.height(18.dp))
+                  Button({ picker.launch(arrayOf("video/*")) }, Modifier.fillMaxWidth().height(56.dp), enabled = !busy) {
+                      Text(if (busy) "ط¬ط§ط±ظچ ظ‚ط±ط§ط،ط© ط§ظ„ظ…ظ„ظپâ€¦" else "ظ…ط´ط±ظˆط¹ ط¬ط¯ظٹط¯: ط§ط³طھظٹط±ط§ط¯ ظپظٹط¯ظٹظˆ")
+                  }
+                  error?.let { Text(it, color = Color(0xFFFF8A80), modifier = Modifier.padding(top = 10.dp)) }
+                  Spacer(Modifier.height(18.dp))
+                  Text("ط§ظ„ظ…ط´ط§ط±ظٹط¹ ط§ظ„ط£ط®ظٹط±ط©", style = MaterialTheme.typography.titleMedium)
+                  if (projects.isEmpty()) Text("ظ„ط§ طھظˆط¬ط¯ ظ…ط´ط§ط±ظٹط¹ ط¨ط¹ط¯. ط§ط³طھظˆط±ط¯ ظپظٹط¯ظٹظˆ ظ„طھط¨ط¯ط£.", color = Muted, modifier = Modifier.padding(top = 8.dp))
+                  LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+                      items(projects) { it ->
+                          Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Panel).clickable { open = it }.padding(14.dp)) {
+                              Text(it.name, maxLines = 1)
+                              Text("${fmtTime(it.durationMs)} آ· ${it.width}أ—${it.height} آ· ${fmtSize(it.sizeBytes)}", color = Muted)
+                          }
+                      }
+                  }
+              }
+          }
+
+          @Composable fun ProjectScreen(p: Project, onBack: () -> Unit) {
+              val ctx = LocalContext.current
+              val player = remember { ExoPlayer.Builder(ctx).build().apply { setMediaItem(MediaItem.fromUri(p.uri)); prepare() } }
+              DisposableEffect(Unit) { onDispose { player.release() } }
+              var frames by remember { mutableStateOf<List<Pair<Long, Bitmap>>>(emptyList()) }
+              LaunchedEffect(p.id) { frames = withContext(Dispatchers.IO) { keyframes(ctx, Uri.parse(p.uri), p.durationMs) } }
+              Column(Modifier.fillMaxSize().systemBarsPadding().padding(18.dp)) {
+                  TextButton(onBack) { Text("ط±ط¬ظˆط¹") }
+                  Text(p.name, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                  Text("${fmtTime(p.durationMs)} آ· ${p.width}أ—${p.height} آ· ${fmtSize(p.sizeBytes)}", color = Muted)
+                  AndroidView({ PlayerView(it).apply { this.player = player } }, Modifier.fillMaxWidth().height(220.dp).padding(vertical = 10.dp))
+                  Text("ظ„ظ‚ط·ط§طھ ظ…ظپطھط§ط­ظٹط©", style = MaterialTheme.typography.titleSmall)
+                  LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(vertical = 8.dp)) {
+                      items(frames) { (t, b) ->
+                          Image(b.asImageBitmap(), null, Modifier.height(64.dp).clip(RoundedCornerShape(8.dp)).clickable { player.seekTo(t) })
+                      }
+                  }
+                  Text("ط­ط§ظ„ط© ط§ظ„ظ…ظٹط²ط§طھ", style = MaterialTheme.typography.titleSmall)
+                  listOf("ط§ط³طھظٹط±ط§ط¯ ظˆظ‚ط±ط§ط،ط© ط§ظ„ظ…ظ„ظپطŒ ظ…ط¹ط§ظٹظ†ط©طŒ ظ„ظ‚ط·ط§طھ: ظ…ط­ظ„ظٹطŒ ظ…ظ†ظپظژظ‘ط°",
+                      "ط§ظ„طھظپط±ظٹط؛ ط§ظ„طµظˆطھظٹ ظˆط§ظ„طھط±ط¬ظ…ط©: ظ‚ظٹط¯ ط§ظ„طھط·ظˆظٹط±",
+                      "طھط­ظ„ظٹظ„ ط§ظ„ظپظٹط¯ظٹظˆ ظˆظƒطھط§ط¨ط© ط§ظ„ط³ظƒط±ط¨طھ: ظ‚ظٹط¯ ط§ظ„طھط·ظˆظٹط±طŒ ظٹط­طھط§ط¬ ط¥ظ†طھط±ظ†طھ ظˆظ…ظپطھط§ط­ API ظˆظ…ظˆط§ظپظ‚طھظƒ ظ‚ط¨ظ„ ط§ظ„ط¥ط±ط³ط§ظ„",
+                      "ط§ظ„ظ…ط­ط±ط± ظ…طھط¹ط¯ط¯ ط§ظ„ظ…ط³ط§ط±ط§طھ ظˆط§ظ„طھطµط¯ظٹط±: ظ‚ظٹط¯ ط§ظ„طھط·ظˆظٹط±").forEach { Text("â€¢ $it", color = Muted, modifier = Modifier.padding(top = 4.dp)) }
+              }
+          }
+
+          fun keyframes(ctx: Context, uri: Uri, durMs: Long): List<Pair<Long, Bitmap>> {
+              val r = MediaMetadataRetriever(); val out = ArrayList<Pair<Long, Bitmap>>()
+              try {
+                  r.setDataSource(ctx, uri)
+                  val n = (durMs / 5000).toInt().coerceIn(3, 12)
+                  for (i in 0 until n) {
+                      val t = durMs * (2 * i + 1) / (2 * n)
+                      r.getScaledFrameAtTime(t * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 320, 180)?.let { out.add(t to it) }
+                  }
+              } catch (_: Exception) {} finally { r.release() }
+              return out
+          }
+          EOF_NEX
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: 8.7 }
+      - run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with: { name: nexcut-ai-debug-apk, path: app/build/outputs/apk/debug/*.apk }
