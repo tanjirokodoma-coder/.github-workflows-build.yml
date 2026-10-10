@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "956609059241",
+    "project_id": "planning-with-ai-b6214",
+    "storage_bucket": "planning-with-ai-b6214.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:956609059241:android:f046dedd80ade1eca08cb8",
+        "android_client_info": {
+          "package_name": "com.nexcut.ai"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDxfvyUw0Je_uFImZ1ncuzcvdQf7wVY3lo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
